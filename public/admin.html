@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live Above — Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --black:#0d0d0d; --red:#db0101; --white:#f5f5f5; --grey:#8a8a8a;
+    --card:#161616; --line:#2a2a2a; --gold:#e0a72b;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--black);color:var(--white);font-family:'DM Sans',sans-serif;padding:28px 20px 60px;}
+  .wrap{max-width:1000px;margin:0 auto;}
+  .brand{font-family:'Bebas Neue',sans-serif;font-size:32px;letter-spacing:1px;margin-bottom:4px;}
+  .brand span{color:var(--red);}
+  .sub{color:var(--grey);font-size:13px;margin-bottom:24px;}
+
+  .key-gate{max-width:360px;margin:80px auto;text-align:center;}
+  .key-gate input{
+    width:100%;background:var(--card);border:1px solid var(--line);color:var(--white);
+    font-family:'DM Sans',sans-serif;font-size:14px;padding:12px 14px;border-radius:6px;margin-bottom:10px;
+  }
+  .key-gate button{
+    width:100%;background:var(--red);color:var(--white);border:none;font-weight:700;
+    font-size:14px;padding:13px;border-radius:6px;cursor:pointer;
+  }
+
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{
+    text-align:left;color:var(--grey);font-weight:700;font-size:11px;letter-spacing:0.4px;
+    padding:10px 12px;border-bottom:1px solid var(--line);
+  }
+  td{padding:12px;border-bottom:1px solid var(--line);vertical-align:middle;}
+  tr:hover td{background:#141414;}
+  .name{font-weight:700;}
+  .email{color:var(--grey);font-size:12px;}
+  .streak{font-family:'Bebas Neue',sans-serif;font-size:20px;color:var(--gold);}
+  .today-pct{font-weight:700;}
+  .today-pct.full{color:var(--red);}
+  .grid30{display:grid;grid-template-columns:repeat(30,6px);gap:2px;}
+  .cell{width:6px;height:6px;border-radius:1px;background:var(--card);border:1px solid var(--line);}
+  .cell.partial{background:#4a1414;border-color:#5a1a1a;}
+  .cell.full{background:var(--red);border-color:var(--red);}
+  .empty-state{color:var(--grey);font-size:13px;padding:40px 0;text-align:center;}
+</style>
+</head>
+<body>
+
+<div class="wrap" id="app">
+
+  <div class="key-gate" id="key-gate">
+    <div class="brand">LIVE <span>ABOVE</span></div>
+    <p class="sub">Admin dashboard</p>
+    <input type="password" id="admin-key-input" placeholder="Admin key">
+    <button id="admin-key-submit">VIEW DASHBOARD</button>
+  </div>
+
+  <div id="dashboard" style="display:none;">
+    <div class="brand">LIVE <span>ABOVE</span></div>
+    <div class="sub">Member scorecard compliance</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Member</th>
+          <th>Today</th>
+          <th>Streak</th>
+          <th>Last 30 days</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty-state" id="empty-state" style="display:none;">No check-ins recorded yet.</div>
+  </div>
+
+</div>
+
+<script>
+  var API_BASE = '';
+
+  var storedKey = sessionStorage.getItem('la_admin_key');
+  if (storedKey) { loadDashboard(storedKey); }
+
+  document.getElementById('admin-key-submit').addEventListener('click', function(){
+    var key = document.getElementById('admin-key-input').value.trim();
+    if(!key) return;
+    sessionStorage.setItem('la_admin_key', key);
+    loadDashboard(key);
+  });
+
+  function loadDashboard(key){
+    fetch(API_BASE + '/api/admin/summary', { headers: { 'x-admin-key': key } })
+      .then(function(res){
+        if(!res.ok){ throw new Error('unauthorized'); }
+        return res.json();
+      })
+      .then(function(data){
+        document.getElementById('key-gate').style.display = 'none';
+        document.getElementById('dashboard').style.display = 'block';
+        renderMembers(data.members || []);
+      })
+      .catch(function(){
+        sessionStorage.removeItem('la_admin_key');
+        alert('Wrong admin key.');
+      });
+  }
+
+  function renderMembers(members){
+    var tbody = document.getElementById('rows');
+    tbody.innerHTML = '';
+    document.getElementById('empty-state').style.display = members.length ? 'none' : 'block';
+
+    members.forEach(function(m){
+      var tr = document.createElement('tr');
+
+      var pctClass = m.today.allComplete ? 'full' : '';
+      var gridHtml = m.last30.map(function(d){
+        var cls = 'cell';
+        if(d.allComplete) cls += ' full';
+        else if(d.completedCount > 0) cls += ' partial';
+        return '<div class="' + cls + '" title="' + d.date + ' — ' + d.completedCount + '/' + d.total + '"></div>';
+      }).join('');
+
+      tr.innerHTML =
+        '<td><div class="name">' + (m.name || '(no name)') + '</div><div class="email">' + (m.email || ('Movement ID: ' + m.memberId)) + '</div></td>' +
+        '<td><span class="today-pct ' + pctClass + '">' + m.today.completedCount + '/' + m.today.total + '</span></td>' +
+        '<td><span class="streak">' + m.streak + '</span></td>' +
+        '<td><div class="grid30">' + gridHtml + '</div></td>';
+
+      tbody.appendChild(tr);
+    });
+  }
+</script>
+
+</body>
+</html>
