@@ -27,6 +27,26 @@ db.exec(`
   );
 `);
 
+// --- Sleep Quality Index table (add near the checkins table setup) ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS sleep_scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_key TEXT NOT NULL,
+    member_id TEXT,
+    member_email TEXT,
+    member_name TEXT,
+    date TEXT NOT NULL,
+    onset_category TEXT,
+    time_in_bed_hrs REAL,
+    est_sleep_hrs REAL,
+    wakeups INTEGER,
+    wake_variance_min REAL,
+    restfulness INTEGER,
+    score INTEGER,
+    updated_at TEXT NOT NULL,
+    UNIQUE(member_key, date)
+  );
+`);
 const ADMIN_KEY = process.env.ADMIN_KEY || 'change-me';
 
 app.post('/api/checkin', (req, res) => {
@@ -60,6 +80,56 @@ app.post('/api/checkin', (req, res) => {
     allComplete: allComplete ? 1 : 0,
     updatedAt: new Date().toISOString()
   });
+  res.json({ ok: true });
+});
+
+// --- POST: log a night's entry ---
+app.post('/api/sleep-score', (req, res) => {
+  const {
+    memberId, memberEmail, memberName, date,
+    onsetCategory, timeInBedHrs, estSleepHrs, wakeups, wakeVarianceMin, restfulness, score
+  } = req.body || {};
+
+  const memberKey = memberId ? `id:${memberId}` : (memberEmail ? `email:${memberEmail}` : null);
+  if (!memberKey || !date || score == null) {
+    return res.status(400).json({ error: 'memberId or memberEmail, plus date and score, are required' });
+  }
+
+  const stmt = db.prepare(`
+    INSERT INTO sleep_scores
+      (member_key, member_id, member_email, member_name, date, onset_category, time_in_bed_hrs, est_sleep_hrs, wakeups, wake_variance_min, restfulness, score, updated_at)
+    VALUES
+      (@memberKey, @memberId, @memberEmail, @memberName, @date, @onsetCategory, @timeInBedHrs, @estSleepHrs, @wakeups, @wakeVarianceMin, @restfulness, @score, @updatedAt)
+    ON CONFLICT(member_key, date) DO UPDATE SET
+      member_id = excluded.member_id,
+      member_email = excluded.member_email,
+      member_name = excluded.member_name,
+      onset_category = excluded.onset_category,
+      time_in_bed_hrs = excluded.time_in_bed_hrs,
+      est_sleep_hrs = excluded.est_sleep_hrs,
+      wakeups = excluded.wakeups,
+      wake_variance_min = excluded.wake_variance_min,
+      restfulness = excluded.restfulness,
+      score = excluded.score,
+      updated_at = excluded.updated_at
+  `);
+
+  stmt.run({
+    memberKey,
+    memberId: memberId || null,
+    memberEmail: memberEmail || null,
+    memberName: memberName || '',
+    date,
+    onsetCategory: onsetCategory || null,
+    timeInBedHrs: timeInBedHrs ?? null,
+    estSleepHrs: estSleepHrs ?? null,
+    wakeups: wakeups ?? null,
+    wakeVarianceMin: wakeVarianceMin ?? null,
+    restfulness: restfulness ?? null,
+    score,
+    updatedAt: new Date().toISOString()
+  });
+
   res.json({ ok: true });
 });
 
@@ -126,6 +196,36 @@ app.get('/api/admin/summary', (req, res) => {
       streak,
       last30
     };
+  });
+
+  res.json({ members });
+});
+
+// --- GET: admin visibility, same auth pattern as /api/admin/summary ---
+app.get('/api/admin/sleep-summary', (req, res) => {
+  if (req.headers['x-admin-key'] !== ADMIN_KEY) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  const rows = db.prepare(`SELECT * FROM sleep_scores ORDER BY member_key, date`).all();
+
+  const byMember = {};
+  rows.forEach(r => {
+    if (!byMember[r.member_key]) {
+      byMember[r.member_key] = { name: r.member_name, email: r.member_email, memberId: r.member_id, days: [] };
+    }
+    byMember[r.member_key].days.push({
+      date: r.date,
+      score: r.score,
+      onsetCategory: r.onset_category,
+      estSleepHrs: r.est_sleep_hrs,
+      restfulness: r.restfulness
+    });
+  });
+
+  const members = Object.values(byMember).map(m => {
+    m.days.sort((a, b) => a.date.localeCompare(b.date));
+    return { name: m.name, email: m.email, memberId: m.memberId, entries: m.days };
   });
 
   res.json({ members });
