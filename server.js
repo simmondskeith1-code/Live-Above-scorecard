@@ -133,6 +133,33 @@ app.post('/api/sleep-score', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- GET: a single member's recent history, powers the 30-day graph in the widget ---
+// e.g. GET /api/sleep-score?memberId=123&days=30  or  ?memberEmail=jane@x.com&days=30
+app.get('/api/sleep-score', (req, res) => {
+  const { memberId, memberEmail, days } = req.query;
+  const memberKey = memberId ? `id:${memberId}` : (memberEmail ? `email:${memberEmail}` : null);
+  const lookback = parseInt(days, 10) || 30;
+
+  if (!memberKey) {
+    return res.status(400).json({ error: 'memberId or memberEmail is required' });
+  }
+
+  const rows = db.prepare(`
+    SELECT date, est_sleep_hrs, score
+    FROM sleep_scores
+    WHERE member_key = ?
+    ORDER BY date DESC
+    LIMIT ?
+  `).all(memberKey, lookback);
+
+  const entries = rows.reverse(); // chronological order for the graph
+  const validHrs = entries.map(r => r.est_sleep_hrs).filter(v => v != null);
+  const avgHrs = validHrs.length
+    ? Math.round((validHrs.reduce((a, b) => a + b, 0) / validHrs.length) * 100) / 100
+    : null;
+
+  res.json({ entries, averageSleepHrs: avgHrs });
+});
 app.get('/api/admin/summary', (req, res) => {
   if (req.headers['x-admin-key'] !== ADMIN_KEY) {
     return res.status(401).json({ error: 'unauthorized' });
