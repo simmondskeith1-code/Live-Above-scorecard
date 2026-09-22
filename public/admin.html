@@ -28,6 +28,15 @@
     font-size:14px;padding:13px;border-radius:6px;cursor:pointer;
   }
 
+  .tabs{display:flex;gap:8px;margin-bottom:20px;border-bottom:1px solid var(--line);}
+  .tab-btn{
+    background:none;border:none;color:var(--grey);font-family:'DM Sans',sans-serif;font-weight:700;
+    font-size:13px;padding:10px 4px;cursor:pointer;border-bottom:2px solid transparent;margin-right:16px;
+  }
+  .tab-btn.active{color:var(--white);border-bottom-color:var(--red);}
+  .tab-panel{display:none;}
+  .tab-panel.active{display:block;}
+
   table{width:100%;border-collapse:collapse;font-size:13px;}
   th{
     text-align:left;color:var(--grey);font-weight:700;font-size:11px;letter-spacing:0.4px;
@@ -35,6 +44,7 @@
   }
   td{padding:12px;border-bottom:1px solid var(--line);vertical-align:middle;}
   tr:hover td{background:#141414;}
+  tr.clickable{cursor:pointer;}
   .name{font-weight:700;}
   .email{color:var(--grey);font-size:12px;}
   .streak{font-family:'Bebas Neue',sans-serif;font-size:20px;color:var(--gold);}
@@ -45,6 +55,21 @@
   .cell.partial{background:#4a1414;border-color:#5a1a1a;}
   .cell.full{background:var(--red);border-color:var(--red);}
   .empty-state{color:var(--grey);font-size:13px;padding:40px 0;text-align:center;}
+
+  .badge{display:inline-block;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;}
+  .badge.flag{background:#4a1414;color:#ff6b6b;border:1px solid #5a1a1a;}
+  .badge.clean{background:var(--card);color:var(--grey);border:1px solid var(--line);}
+  .cal-line{font-weight:700;}
+  .cal-line.under{color:var(--gold);}
+  .cal-line.over{color:var(--red);}
+
+  .drill{display:none;background:var(--card);}
+  .drill.open{display:table-row;}
+  .drill td{padding:16px 12px;}
+  .drill-table{width:100%;border-collapse:collapse;font-size:12px;}
+  .drill-table th{padding:6px 8px;font-size:10px;}
+  .drill-table td{padding:6px 8px;border-bottom:1px solid var(--line);}
+  .drill-low{color:#ff6b6b;font-weight:700;}
 </style>
 </head>
 <body>
@@ -60,25 +85,55 @@
 
   <div id="dashboard" style="display:none;">
     <div class="brand">LIVE <span>ABOVE</span></div>
-    <div class="sub">Member scorecard compliance</div>
-    <table>
-      <thead>
-        <tr>
-          <th>Member</th>
-          <th>Today</th>
-          <th>Streak</th>
-          <th>Last 30 days</th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
-    <div class="empty-state" id="empty-state" style="display:none;">No check-ins recorded yet.</div>
+    <div class="sub">Member compliance</div>
+
+    <div class="tabs">
+      <button class="tab-btn active" id="tab-btn-scorecard" data-tab="scorecard">SCORECARD</button>
+      <button class="tab-btn" id="tab-btn-nutrition" data-tab="nutrition">NUTRITION</button>
+    </div>
+
+    <div class="tab-panel active" id="tab-scorecard">
+      <table>
+        <thead>
+          <tr>
+            <th>Member</th>
+            <th>Today</th>
+            <th>Streak</th>
+            <th>Last 30 days</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty-state" id="empty-state" style="display:none;">No check-ins recorded yet.</div>
+    </div>
+
+    <div class="tab-panel" id="tab-nutrition">
+      <table>
+        <thead>
+          <tr>
+            <th>Member</th>
+            <th>Today's Calories</th>
+            <th>Flagged Deficiency</th>
+            <th>Days Logged</th>
+          </tr>
+        </thead>
+        <tbody id="nutrition-rows"></tbody>
+      </table>
+      <div class="empty-state" id="nutrition-empty-state" style="display:none;">No nutrition logs recorded yet.</div>
+    </div>
+
   </div>
 
 </div>
 
 <script>
   var API_BASE = '';
+  var MICRO_LABELS = {
+    vitA:'Vitamin A', iron:'Iron', calcium:'Calcium', vitD:'Vitamin D', potassium:'Potassium',
+    magnesium:'Magnesium', vitC:'Vitamin C', vitE:'Vitamin E', sodium:'Sodium', b6:'Vitamin B6',
+    b12:'Vitamin B12', zinc:'Zinc', vitK:'Vitamin K', folate:'Folate', iodine:'Iodine',
+    choline:'Choline', dha:'DHA', biotin:'Biotin'
+  };
 
   var storedKey = sessionStorage.getItem('la_admin_key');
   if (storedKey) { loadDashboard(storedKey); }
@@ -90,21 +145,33 @@
     loadDashboard(key);
   });
 
+  document.querySelectorAll('.tab-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      document.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
+      document.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('active'); });
+      btn.classList.add('active');
+      document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    });
+  });
+
   function loadDashboard(key){
-    fetch(API_BASE + '/api/admin/summary', { headers: { 'x-admin-key': key } })
-      .then(function(res){
-        if(!res.ok){ throw new Error('unauthorized'); }
-        return res.json();
-      })
-      .then(function(data){
-        document.getElementById('key-gate').style.display = 'none';
-        document.getElementById('dashboard').style.display = 'block';
-        renderMembers(data.members || []);
-      })
-      .catch(function(){
-        sessionStorage.removeItem('la_admin_key');
-        alert('Wrong admin key.');
-      });
+    Promise.all([
+      fetch(API_BASE + '/api/admin/summary', { headers: { 'x-admin-key': key } }).then(handleAuthResponse),
+      fetch(API_BASE + '/api/admin/nutrition-summary', { headers: { 'x-admin-key': key } }).then(handleAuthResponse)
+    ]).then(function(results){
+      document.getElementById('key-gate').style.display = 'none';
+      document.getElementById('dashboard').style.display = 'block';
+      renderMembers(results[0].members || []);
+      renderNutrition(results[1].members || []);
+    }).catch(function(){
+      sessionStorage.removeItem('la_admin_key');
+      alert('Wrong admin key.');
+    });
+  }
+
+  function handleAuthResponse(res){
+    if(!res.ok){ throw new Error('unauthorized'); }
+    return res.json();
   }
 
   function renderMembers(members){
@@ -131,6 +198,78 @@
 
       tbody.appendChild(tr);
     });
+  }
+
+  function renderNutrition(members){
+    var tbody = document.getElementById('nutrition-rows');
+    tbody.innerHTML = '';
+    document.getElementById('nutrition-empty-state').style.display = members.length ? 'none' : 'block';
+
+    members.forEach(function(m, idx){
+      var tr = document.createElement('tr');
+      tr.className = 'clickable';
+
+      var calLine = '—';
+      if (m.latest && m.latest.calories != null) {
+        var cls = '';
+        if (m.latest.goalCalories) {
+          cls = m.latest.calories < m.latest.goalCalories * 0.85 ? 'under'
+              : (m.latest.calories > m.latest.goalCalories * 1.15 ? 'over' : '');
+        }
+        calLine = '<span class="cal-line ' + cls + '">' + Math.round(m.latest.calories) + '</span>' +
+          (m.latest.goalCalories ? ' <span class="email">/ ' + Math.round(m.latest.goalCalories) + ' goal</span>' : '');
+      }
+
+      var badgeHtml = m.flaggedDeficiency
+        ? '<span class="badge flag">' + (MICRO_LABELS[m.flaggedDeficiency.key] || m.flaggedDeficiency.key) + ' low ' + m.flaggedDeficiency.daysLow + '/' + m.flaggedDeficiency.loggedDays + ' days</span>'
+        : '<span class="badge clean">None flagged</span>';
+
+      tr.innerHTML =
+        '<td><div class="name">' + (m.name || '(no name)') + '</div><div class="email">' + (m.email || ('Movement ID: ' + m.memberId)) + '</div></td>' +
+        '<td>' + calLine + '</td>' +
+        '<td>' + badgeHtml + '</td>' +
+        '<td>' + m.loggedDays + '</td>';
+
+      tr.addEventListener('click', function(){ toggleDrill(idx, m); });
+      tbody.appendChild(tr);
+
+      var drillRow = document.createElement('tr');
+      drillRow.className = 'drill';
+      drillRow.id = 'drill-' + idx;
+      drillRow.innerHTML = '<td colspan="4"><div id="drill-content-' + idx + '"></div></td>';
+      tbody.appendChild(drillRow);
+    });
+  }
+
+  function toggleDrill(idx, member){
+    var row = document.getElementById('drill-' + idx);
+    var isOpen = row.classList.contains('open');
+    document.querySelectorAll('.drill.open').forEach(function(r){ r.classList.remove('open'); });
+    if (isOpen) return;
+
+    row.classList.add('open');
+    var content = document.getElementById('drill-content-' + idx);
+
+    var rowsHtml = (member.days || []).slice().reverse().map(function(d){
+      var lowMicros = Object.keys(d.microPct || {}).filter(function(k){ return d.microPct[k] < 50; });
+      var lowText = lowMicros.length
+        ? lowMicros.map(function(k){ return MICRO_LABELS[k] || k; }).join(', ')
+        : '—';
+      return '<tr>' +
+        '<td>' + d.date + '</td>' +
+        '<td>' + (d.calories != null ? Math.round(d.calories) : '—') + '</td>' +
+        '<td>' + (d.proteinG != null ? Math.round(d.proteinG) + 'g' : '—') + '</td>' +
+        '<td>' + (d.carbsG != null ? Math.round(d.carbsG) + 'g' : '—') + '</td>' +
+        '<td>' + (d.fatG != null ? Math.round(d.fatG) + 'g' : '—') + '</td>' +
+        '<td class="' + (lowMicros.length ? 'drill-low' : '') + '">' + lowText + '</td>' +
+        '</tr>';
+    }).join('');
+
+    content.innerHTML =
+      '<table class="drill-table">' +
+      '<thead><tr><th>Date</th><th>Cal</th><th>Protein</th><th>Carbs</th><th>Fat</th><th>Micros below 50% DV</th></tr></thead>' +
+      '<tbody>' + rowsHtml + '</tbody>' +
+      '</table>';
   }
 </script>
 
