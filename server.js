@@ -47,6 +47,28 @@ db.exec(`
     UNIQUE(member_key, date)
   );
 `);
+// --- Nutrition log table (mirrors checkins / sleep_scores pattern) ---
+db.exec(`
+  CREATE TABLE IF NOT EXISTS nutrition_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_key TEXT NOT NULL,
+    member_id TEXT,
+    member_email TEXT,
+    member_name TEXT,
+    date TEXT NOT NULL,
+    calories REAL,
+    goal_calories REAL,
+    protein_g REAL,
+    carbs_g REAL,
+    fat_g REAL,
+    micros_json TEXT,
+    micro_pct_json TEXT,
+    lowest_micro_key TEXT,
+    diet_tags TEXT,
+    updated_at TEXT NOT NULL,
+    UNIQUE(member_key, date)
+  );
+`);
 const ADMIN_KEY = process.env.ADMIN_KEY || 'change-me';
 
 app.post('/api/checkin', (req, res) => {
