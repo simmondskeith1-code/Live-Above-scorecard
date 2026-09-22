@@ -106,6 +106,17 @@ app.post('/api/checkin', async (req, res) => {
 
 // ---- admin dashboard calls this, protected by a shared key ----
 app.get('/api/admin/summary', async (req, res) => {
+  // TEMPORARY diagnostic logging: shows exactly what was received vs
+  // expected on every attempt, wrapped in JSON.stringify so any invisible
+  // whitespace or missing value shows up as quotes with nothing between
+  // them, instead of looking identical to the eye. Remove this block once
+  // login is confirmed working.
+  console.log(
+    'Admin login attempt — received:', JSON.stringify(req.headers['x-admin-key']),
+    '| expected:', JSON.stringify(ADMIN_KEY),
+    '| match:', req.headers['x-admin-key'] === ADMIN_KEY
+  );
+
   if (req.headers['x-admin-key'] !== ADMIN_KEY) {
     return res.status(401).json({ error: 'unauthorized' });
   }
