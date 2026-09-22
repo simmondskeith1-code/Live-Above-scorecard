@@ -11,12 +11,31 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Render's managed Postgres provides this connection string automatically
 // as an environment variable once the database is attached to this service.
-// ssl is required for Render's Postgres in production.
+//
+// SSL handling: Render's INTERNAL connection string (the one used here, a
+// short hostname like "dpg-xxxxx-a" with no domain suffix) is private
+// network traffic and does NOT use SSL. Render's EXTERNAL connection string
+// (a full hostname like "dpg-xxxxx-a.oregon-postgres.render.com") does
+// require SSL. Forcing SSL on the internal connection makes the handshake
+// hang instead of failing cleanly, which is what caused the stuck deploy.
+// Detect which one we have by checking whether the host contains a dot.
+function resolveSslConfig(connectionString) {
+  if (!connectionString) return false;
+  try {
+    const url = new URL(connectionString);
+    const isInternal = !url.hostname.includes('.');
+    if (isInternal) return false;
+    return { rejectUnauthorized: false };
+  } catch (e) {
+    // If the string can't be parsed for some reason, default to no SSL
+    // rather than risk another hang.
+    return false;
+  }
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('localhost')
-    ? false
-    : { rejectUnauthorized: false }
+  ssl: resolveSslConfig(process.env.DATABASE_URL)
 });
 
 async function initDb() {
