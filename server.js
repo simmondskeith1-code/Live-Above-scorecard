@@ -279,6 +279,171 @@ app.get('/api/admin/sleep-summary', (req, res) => {
 
   res.json({ members });
 });
+// --- POST: nutrient calculator saves one day's totals ---
+app.post('/api/nutrition-log', (req, res) => {
+  const {
+    memberId, memberEmail, memberName, date,
+    calories, goalCalories, proteinG, carbsG, fatG,
+    micros, microPct, lowestMicroKey, dietTags
+  } = req.body || {};
 
+  const memberKey = memberId ? `id:${memberId}` : (memberEmail ? `email:${memberEmail}` : null);
+  if (!memberKey || !date) {
+    return res.status(400).json({ error: 'memberId or memberEmail, plus date, are required' });
+  }
+
+  const stmt = db.prepare(`
+    INSERT INTO nutrition_logs
+      (member_key, member_id, member_email, member_name, date, calories, goal_calories, protein_g, carbs_g, fat_g, micros_json, micro_pct_json, lowest_micro_key, diet_tags, updated_at)
+    VALUES
+      (@memberKey, @memberId, @memberEmail, @memberName, @date, @calories, @goalCalories, @proteinG, @carbsG, @fatG, @microsJson, @microPctJson, @lowestMicroKey, @dietTags, @updatedAt)
+    ON CONFLICT(member_key, date) DO UPDATE SET
+      member_id = excluded.member_id,
+      member_email = excluded.member_email,
+      member_name = excluded.member_name,
+      calories = excluded.calories,
+      goal_calories = excluded.goal_calories,
+      protein_g = excluded.protein_g,
+      carbs_g = excluded.carbs_g,
+      fat_g = excluded.fat_g,
+      micros_json = excluded.micros_json,
+      micro_pct_json = excluded.micro_pct_json,
+      lowest_micro_key = excluded.lowest_micro_key,
+      diet_tags = excluded.diet_tags,
+      updated_at = excluded.updated_at
+  `);
+
+  stmt.run({
+    memberKey,
+    memberId: memberId || null,
+    memberEmail: memberEmail || null,
+    memberName: memberName || '',
+    date,
+    calories: calories ?? null,
+    goalCalories: goalCalories ?? null,
+    proteinG: proteinG ?? null,
+    carbsG: carbsG ?? null,
+    fatG: fatG ?? null,
+    microsJson: JSON.stringify(micros || {}),
+    microPctJson: JSON.stringify(microPct || {}),
+    lowestMicroKey: lowestMicroKey || null,
+    dietTags: JSON.stringify(dietTags || []),
+    updatedAt: new Date().toISOString()
+  });
+
+  res.json({ ok: true });
+});
+
+// --- GET: a single member's recent nutrition history (for the calculator's own 30-day view across devices) ---
+app.get('/api/nutrition-log', (req, res) => {
+  const { memberId, memberEmail, days } = req.query;
+  const memberKey = memberId ? `id:${memberId}` : (memberEmail ? `email:${memberEmail}` : null);
+  const lookback = parseInt(days, 10) || 30;
+
+  if (!memberKey) {
+    return res.status(400).json({ error: 'memberId or memberEmail is required' });
+  }
+
+  const rows = db.prepare(`
+    SELECT date, calories, goal_calories, protein_g, carbs_g, fat_g, micros_json, micro_pct_json, lowest_micro_key
+    FROM nutrition_logs
+    WHERE member_key = ?
+    ORDER BY date DESC
+    LIMIT ?
+  `).all(memberKey, lookback);
+
+  const entries = rows.reverse().map(r => ({
+    date: r.date,
+    calories: r.calories,
+    goalCalories: r.goal_calories,
+    proteinG: r.protein_g,
+    carbsG: r.carbs_g,
+    fatG: r.fat_g,
+    micros: JSON.parse(r.micros_json || '{}'),
+    microPct: JSON.parse(r.micro_pct_json || '{}'),
+    lowestMicroKey: r.lowest_micro_key
+  }));
+
+  res.json({ entries });
+});
+
+// --- GET: admin visibility, same auth pattern as /api/admin/summary ---
+// Flags a member's most persistently low micronutrient over the trailing
+// window (default 21 days) so a coach can see it at a glance, without
+// opening the full log. "Persistent" = below 50% DV on at least ~half the
+// days logged in that window, not a single bad day.
+app.get('/api/admin/nutrition-summary', (req, res) => {
+  if (req.headers['x-admin-key'] !== ADMIN_KEY) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  const windowDays = parseInt(req.query.days, 10) || 21;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - windowDays);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+  const rows = db.prepare(`
+    SELECT * FROM nutrition_logs WHERE date >= ? ORDER BY member_key, date
+  `).all(cutoffStr);
+
+  const byMember = {};
+  rows.forEach(r => {
+    if (!byMember[r.member_key]) {
+      byMember[r.member_key] = { name: r.member_name, email: r.member_email, memberId: r.member_id, days: [] };
+    }
+    byMember[r.member_key].days.push({
+      date: r.date,
+      calories: r.calories,
+      goalCalories: r.goal_calories,
+      proteinG: r.protein_g,
+      carbsG: r.carbs_g,
+      fatG: r.fat_g,
+      microPct: JSON.parse(r.micro_pct_json || '{}')
+    });
+  });
+
+  const members = Object.values(byMember).map(m => {
+    m.days.sort((a, b) => a.date.localeCompare(b.date));
+
+    // tally days each micro was below 50% DV
+    const lowCounts = {};
+    m.days.forEach(d => {
+      Object.keys(d.microPct || {}).forEach(key => {
+        if (d.microPct[key] < 50) {
+          lowCounts[key] = (lowCounts[key] || 0) + 1;
+        }
+      });
+    });
+
+    let flagged = null;
+    let flaggedCount = 0;
+    Object.keys(lowCounts).forEach(key => {
+      if (lowCounts[key] > flaggedCount) {
+        flagged = key;
+        flaggedCount = lowCounts[key];
+      }
+    });
+
+    // only flag if it's at least half the days actually logged (avoid noise from 1-2 bad days)
+    const loggedDays = m.days.length;
+    const flaggedDeficiency = (flagged && loggedDays > 0 && flaggedCount >= Math.ceil(loggedDays / 2))
+      ? { key: flagged, daysLow: flaggedCount, loggedDays }
+      : null;
+
+    const latest = m.days[m.days.length - 1] || null;
+
+    return {
+      name: m.name,
+      email: m.email,
+      memberId: m.memberId,
+      loggedDays,
+      latest,          // most recent day's totals, for a quick "today" glance
+      flaggedDeficiency,
+      days: m.days     // full window, powers the drill-down
+    };
+  });
+
+  res.json({ members, windowDays });
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Live Above scorecard backend running on port ${PORT}`));
