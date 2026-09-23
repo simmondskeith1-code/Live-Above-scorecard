@@ -55,6 +55,27 @@ async function initDb() {
       UNIQUE(member_key, date)
     );
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS nutrition_logs (
+      id SERIAL PRIMARY KEY,
+      member_key TEXT NOT NULL,
+      member_id TEXT,
+      member_email TEXT,
+      member_name TEXT,
+      date TEXT NOT NULL,
+      calories REAL,
+      goal_calories REAL,
+      protein_g REAL,
+      carbs_g REAL,
+      fat_g REAL,
+      micros JSONB,
+      micro_pct JSONB,
+      lowest_micro_key TEXT,
+      diet_tags JSONB,
+      updated_at TIMESTAMPTZ NOT NULL,
+      UNIQUE(member_key, date)
+    );
+  `);
 }
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'change-me';
@@ -189,6 +210,172 @@ app.get('/api/admin/summary', async (req, res) => {
   } catch (err) {
     console.error('admin summary failed:', err);
     res.status(500).json({ error: 'failed to load summary' });
+  }
+});
+// ---- nutrient calculator calls this on every meal save ----
+app.post('/api/nutrition-log', async (req, res) => {
+  const {
+    memberId, memberEmail, memberName, date,
+    calories, goalCalories, proteinG, carbsG, fatG,
+    micros, microPct, lowestMicroKey, dietTags
+  } = req.body || {};
+
+  const memberKey = memberId ? `id:${memberId}` : (memberEmail ? `email:${memberEmail}` : null);
+  if (!memberKey || !date) {
+    return res.status(400).json({ error: 'memberId or memberEmail, plus date, are required' });
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO nutrition_logs
+         (member_key, member_id, member_email, member_name, date, calories, goal_calories, protein_g, carbs_g, fat_g, micros, micro_pct, lowest_micro_key, diet_tags, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+       ON CONFLICT (member_key, date) DO UPDATE SET
+         member_id = EXCLUDED.member_id,
+         member_email = EXCLUDED.member_email,
+         member_name = EXCLUDED.member_name,
+         calories = EXCLUDED.calories,
+         goal_calories = EXCLUDED.goal_calories,
+         protein_g = EXCLUDED.protein_g,
+         carbs_g = EXCLUDED.carbs_g,
+         fat_g = EXCLUDED.fat_g,
+         micros = EXCLUDED.micros,
+         micro_pct = EXCLUDED.micro_pct,
+         lowest_micro_key = EXCLUDED.lowest_micro_key,
+         diet_tags = EXCLUDED.diet_tags,
+         updated_at = EXCLUDED.updated_at`,
+      [
+        memberKey,
+        memberId || null,
+        memberEmail || null,
+        memberName || '',
+        date,
+        calories ?? null,
+        goalCalories ?? null,
+        proteinG ?? null,
+        carbsG ?? null,
+        fatG ?? null,
+        JSON.stringify(micros || {}),
+        JSON.stringify(microPct || {}),
+        lowestMicroKey || null,
+        JSON.stringify(dietTags || []),
+        new Date().toISOString()
+      ]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('nutrition-log insert failed:', err);
+    res.status(500).json({ error: 'failed to save nutrition log' });
+  }
+});
+
+// ---- calculator's own 30-day view calls this, so it survives a device switch ----
+app.get('/api/nutrition-log', async (req, res) => {
+  const { memberId, memberEmail, days } = req.query;
+  const memberKey = memberId ? `id:${memberId}` : (memberEmail ? `email:${memberEmail}` : null);
+  const lookback = parseInt(days, 10) || 30;
+
+  if (!memberKey) {
+    return res.status(400).json({ error: 'memberId or memberEmail is required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT date, calories, goal_calories, protein_g, carbs_g, fat_g, micros, micro_pct, lowest_micro_key
+       FROM nutrition_logs
+       WHERE member_key = $1
+       ORDER BY date DESC
+       LIMIT $2`,
+      [memberKey, lookback]
+    );
+
+    // JSONB columns come back already parsed as JS objects — no JSON.parse needed.
+    const entries = result.rows.reverse().map(r => ({
+      date: r.date,
+      calories: r.calories,
+      goalCalories: r.goal_calories,
+      proteinG: r.protein_g,
+      carbsG: r.carbs_g,
+      fatG: r.fat_g,
+      micros: r.micros || {},
+      microPct: r.micro_pct || {},
+      lowestMicroKey: r.lowest_micro_key
+    }));
+
+    res.json({ entries });
+  } catch (err) {
+    console.error('nutrition-log fetch failed:', err);
+    res.status(500).json({ error: 'failed to load nutrition log' });
+  }
+});
+
+// ---- admin dashboard's Nutrition tab, same auth pattern as /api/admin/summary ----
+// Flags a member's most persistently low micronutrient over the trailing window
+// (default 21 days) — below 50% DV on at least half the days actually logged,
+// so one bad day doesn't trigger a false flag.
+app.get('/api/admin/nutrition-summary', async (req, res) => {
+  if (req.headers['x-admin-key'] !== ADMIN_KEY) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  const windowDays = parseInt(req.query.days, 10) || 21;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - windowDays);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+  try {
+    const result = await pool.query(
+      `SELECT * FROM nutrition_logs WHERE date >= $1 ORDER BY member_key, date`,
+      [cutoffStr]
+    );
+    const rows = result.rows;
+
+    const byMember = {};
+    rows.forEach(r => {
+      if (!byMember[r.member_key]) {
+        byMember[r.member_key] = { name: r.member_name, email: r.member_email, memberId: r.member_id, days: [] };
+      }
+      byMember[r.member_key].days.push({
+        date: r.date,
+        calories: r.calories,
+        goalCalories: r.goal_calories,
+        proteinG: r.protein_g,
+        carbsG: r.carbs_g,
+        fatG: r.fat_g,
+        microPct: r.micro_pct || {}
+      });
+    });
+
+    const members = Object.values(byMember).map(m => {
+      m.days.sort((a, b) => a.date.localeCompare(b.date));
+
+      const lowCounts = {};
+      m.days.forEach(d => {
+        Object.keys(d.microPct || {}).forEach(key => {
+          if (d.microPct[key] < 50) lowCounts[key] = (lowCounts[key] || 0) + 1;
+        });
+      });
+
+      let flagged = null;
+      let flaggedCount = 0;
+      Object.keys(lowCounts).forEach(key => {
+        if (lowCounts[key] > flaggedCount) { flagged = key; flaggedCount = lowCounts[key]; }
+      });
+
+      const loggedDays = m.days.length;
+      const flaggedDeficiency = (flagged && loggedDays > 0 && flaggedCount >= Math.ceil(loggedDays / 2))
+        ? { key: flagged, daysLow: flaggedCount, loggedDays }
+        : null;
+
+      const latest = m.days[m.days.length - 1] || null;
+
+      return { name: m.name, email: m.email, memberId: m.memberId, loggedDays, latest, flaggedDeficiency, days: m.days };
+    });
+
+    res.json({ members, windowDays });
+  } catch (err) {
+    console.error('admin nutrition-summary failed:', err);
+    res.status(500).json({ error: 'failed to load nutrition summary' });
   }
 });
 
