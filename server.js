@@ -127,8 +127,6 @@ app.post('/api/checkin', async (req, res) => {
 
 // ---- admin dashboard calls this, protected by a shared key ----
 app.get('/api/admin/summary', async (req, res) => {
-
-
   if (req.headers['x-admin-key'] !== ADMIN_KEY) {
     return res.status(401).json({ error: 'unauthorized' });
   }
@@ -151,7 +149,8 @@ app.get('/api/admin/summary', async (req, res) => {
         date: r.date,
         completedCount: r.completed_count,
         total: r.total,
-        allComplete: r.all_complete
+        allComplete: r.all_complete,
+        items: r.items
       });
     });
 
@@ -187,13 +186,35 @@ app.get('/api/admin/summary', async (req, res) => {
         last30.push(byDate[key] || { date: key, completedCount: 0, total: 0, allComplete: false });
       }
 
+      // per-item miss rate over the last 30 days: which boxes this member
+      // skips most often. Only counts days that actually have a check-in
+      // (no check-in at all isn't the same as "missed this box"). Item ids
+      // are read from whatever keys show up in their own check-ins, so this
+      // doesn't need to know the widget's current checklist in advance.
+      const recordedItemSets = last30
+        .filter(d => d.items)
+        .map(d => d.items);
+      const recordedDays = recordedItemSets.length;
+      const itemIds = new Set();
+      recordedItemSets.forEach(items => Object.keys(items).forEach(id => itemIds.add(id)));
+      const itemMissRates = Array.from(itemIds).map(id => {
+        const missed = recordedItemSets.filter(items => !items[id]).length;
+        return {
+          id,
+          missed,
+          recordedDays,
+          missRatePct: recordedDays ? Math.round((missed / recordedDays) * 100) : 0
+        };
+      }).sort((a, b) => b.missRatePct - a.missRatePct);
+
       return {
         name: m.name,
         email: m.email,
         memberId: m.memberId,
         today,
         streak,
-        last30
+        last30,
+        itemMissRates
       };
     });
 
@@ -203,6 +224,7 @@ app.get('/api/admin/summary', async (req, res) => {
     res.status(500).json({ error: 'failed to load summary' });
   }
 });
+
 // ---- nutrient calculator calls this on every meal save ----
 app.post('/api/nutrition-log', async (req, res) => {
   const {
