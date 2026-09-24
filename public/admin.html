@@ -5,23 +5,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Live Above — Admin</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Teko:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;700;900&display=swap" rel="stylesheet">
 <style>
   :root{
     --black:#0d0d0d; --red:#db0101; --white:#f5f5f5; --grey:#8a8a8a;
     --card:#161616; --line:#2a2a2a; --gold:#e0a72b;
   }
   *{box-sizing:border-box;margin:0;padding:0;}
-  body{background:var(--black);color:var(--white);font-family:'Poppins',sans-serif;padding:28px 20px 60px;}
+  body{background:var(--black);color:var(--white);font-family:'DM Sans',sans-serif;padding:28px 20px 60px;}
   .wrap{max-width:1000px;margin:0 auto;}
-  .brand{font-family:'Teko',sans-serif;font-size:32px;letter-spacing:1px;margin-bottom:4px;}
+  .brand{font-family:'Bebas Neue',sans-serif;font-size:32px;letter-spacing:1px;margin-bottom:4px;}
   .brand span{color:var(--red);}
   .sub{color:var(--grey);font-size:13px;margin-bottom:24px;}
 
   .key-gate{max-width:360px;margin:80px auto;text-align:center;}
   .key-gate input{
     width:100%;background:var(--card);border:1px solid var(--line);color:var(--white);
-    font-family:'Poppins',sans-serif;font-size:14px;padding:12px 14px;border-radius:6px;margin-bottom:10px;
+    font-family:'DM Sans',sans-serif;font-size:14px;padding:12px 14px;border-radius:6px;margin-bottom:10px;
   }
   .key-gate button{
     width:100%;background:var(--red);color:var(--white);border:none;font-weight:700;
@@ -30,7 +30,7 @@
 
   .tabs{display:flex;gap:8px;margin-bottom:20px;border-bottom:1px solid var(--line);}
   .tab-btn{
-    background:none;border:none;color:var(--grey);font-family:'Poppins',sans-serif;font-weight:700;
+    background:none;border:none;color:var(--grey);font-family:'DM Sans',sans-serif;font-weight:700;
     font-size:13px;padding:10px 4px;cursor:pointer;border-bottom:2px solid transparent;margin-right:16px;
   }
   .tab-btn.active{color:var(--white);border-bottom-color:var(--red);}
@@ -47,7 +47,7 @@
   tr.clickable{cursor:pointer;}
   .name{font-weight:700;}
   .email{color:var(--grey);font-size:12px;}
-  .streak{font-family:'Teko',sans-serif;font-size:20px;color:var(--gold);}
+  .streak{font-family:'Bebas Neue',sans-serif;font-size:20px;color:var(--gold);}
   .today-pct{font-weight:700;}
   .today-pct.full{color:var(--red);}
   .grid30{display:grid;grid-template-columns:repeat(30,6px);gap:2px;}
@@ -55,10 +55,6 @@
   .cell.partial{background:#4a1414;border-color:#5a1a1a;}
   .cell.full{background:var(--red);border-color:var(--red);}
   .empty-state{color:var(--grey);font-size:13px;padding:40px 0;text-align:center;}
-  .miss-list{display:flex;flex-direction:column;gap:3px;min-width:140px;}
-  .miss-row{display:flex;justify-content:space-between;gap:10px;font-size:12px;}
-  .miss-pct{color:var(--red);font-weight:700;}
-  .miss-none{color:var(--grey);font-size:12px;}
 
   .badge{display:inline-block;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;}
   .badge.flag{background:#4a1414;color:#ff6b6b;border:1px solid #5a1a1a;}
@@ -103,7 +99,6 @@
             <th>Member</th>
             <th>Today</th>
             <th>Streak</th>
-            <th>Most missed (30d)</th>
             <th>Last 30 days</th>
           </tr>
         </thead>
@@ -133,27 +128,11 @@
 
 <script>
   var API_BASE = ''; // same-origin by default; set to full backend URL if hosting admin.html elsewhere
-
-  // Human-readable labels for the "Most missed" column. The backend only
-  // knows item ids (whatever keys the widget sends), not display labels, so
-  // this map has to be kept in sync by hand with the ITEMS array in
-  // daily-scorecard.html. An id with no entry here just falls back to
-  // showing its raw id.
-  var ITEM_LABELS = {
-    mobility: 'Mobility',
-    sleep: 'Sleep 7+',
-    water: '70oz water',
-    sunlight: 'Morning sunlight',
-    breathwork: 'Breathwork',
-    mental: 'Mental exercise',
-    foodlog: 'Food log'
-  };
-
   var MICRO_LABELS = {
     vitA:'Vitamin A', iron:'Iron', calcium:'Calcium', vitD:'Vitamin D', potassium:'Potassium',
     magnesium:'Magnesium', vitC:'Vitamin C', vitE:'Vitamin E', sodium:'Sodium', b6:'Vitamin B6',
     b12:'Vitamin B12', zinc:'Zinc', vitK:'Vitamin K', folate:'Folate', iodine:'Iodine',
-    choline:'Choline', dha:'DHA', biotin:'Biotin'
+    choline:'Choline', dha:'DHA', biotin:'Biotin', copper:'Copper', selenium:'Selenium'
   };
 
   var storedKey = sessionStorage.getItem('la_admin_key');
@@ -228,7 +207,6 @@
       // row throw and silently kill the whole render.
       var today = m.today || { completedCount: 0, total: 0, allComplete: false };
       var last30 = Array.isArray(m.last30) ? m.last30 : [];
-      var missRates = Array.isArray(m.itemMissRates) ? m.itemMissRates : [];
 
       var pctClass = today.allComplete ? 'full' : '';
       var gridHtml = last30.map(function(d){
@@ -238,24 +216,10 @@
         return '<div class="' + cls + '" title="' + d.date + ' — ' + d.completedCount + '/' + d.total + '"></div>';
       }).join('');
 
-      var missedOnes = missRates.filter(function(x){ return x.missed > 0; }).slice(0, 3);
-      var missHtml;
-      if (!missRates.length) {
-        missHtml = '<span class="miss-none">No data yet</span>';
-      } else if (!missedOnes.length) {
-        missHtml = '<span class="miss-none">No misses</span>';
-      } else {
-        missHtml = missedOnes.map(function(x){
-          var label = ITEM_LABELS[x.id] || x.id;
-          return '<div class="miss-row"><span>' + label + '</span><span class="miss-pct">' + x.missRatePct + '%</span></div>';
-        }).join('');
-      }
-
       tr.innerHTML =
         '<td><div class="name">' + (m.name || '(no name)') + '</div><div class="email">' + (m.email || ('Movement ID: ' + m.memberId)) + '</div></td>' +
         '<td><span class="today-pct ' + pctClass + '">' + today.completedCount + '/' + today.total + '</span></td>' +
         '<td><span class="streak">' + (m.streak || 0) + '</span></td>' +
-        '<td><div class="miss-list">' + missHtml + '</div></td>' +
         '<td><div class="grid30">' + gridHtml + '</div></td>';
 
       tbody.appendChild(tr);
