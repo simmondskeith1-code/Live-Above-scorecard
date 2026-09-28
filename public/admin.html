@@ -115,6 +115,8 @@
             <th>Today's Calories</th>
             <th>Flagged Deficiency</th>
             <th>Days Logged</th>
+            <th>No Added Sugar</th>
+            <th>No Alcohol</th>
           </tr>
         </thead>
         <tbody id="nutrition-rows"></tbody>
@@ -250,11 +252,23 @@
         ? '<span class="badge flag">' + (MICRO_LABELS[m.flaggedDeficiency.key] || m.flaggedDeficiency.key) + ' low ' + m.flaggedDeficiency.daysLow + '/' + m.flaggedDeficiency.loggedDays + ' days</span>'
         : '<span class="badge clean">None flagged</span>';
 
+      // addedSugarStreak / drinksAlcohol / noAlcoholStreak: comes straight from server.js's
+      // /api/admin/nutrition-summary, which just carries through the streak numbers the
+      // calculator already computed client-side from the member's own 30-day archive.
+      var sugarStreakHtml = (m.addedSugarStreak != null)
+        ? '<span class="streak">' + m.addedSugarStreak + '</span>'
+        : '—';
+      var alcoholStreakHtml = !m.drinksAlcohol
+        ? '<span class="email">N/A</span>'
+        : (m.noAlcoholStreak != null ? '<span class="streak">' + m.noAlcoholStreak + '</span>' : '—');
+
       tr.innerHTML =
         '<td><div class="name">' + (m.name || '(no name)') + '</div><div class="email">' + (m.email || ('Movement ID: ' + m.memberId)) + '</div></td>' +
         '<td>' + calLine + '</td>' +
         '<td>' + badgeHtml + '</td>' +
-        '<td>' + (m.loggedDays || 0) + '</td>';
+        '<td>' + (m.loggedDays || 0) + '</td>' +
+        '<td>' + sugarStreakHtml + '</td>' +
+        '<td>' + alcoholStreakHtml + '</td>';
 
       tr.addEventListener('click', function(){ toggleDrill(idx, m); });
       tbody.appendChild(tr);
@@ -262,7 +276,7 @@
       var drillRow = document.createElement('tr');
       drillRow.className = 'drill';
       drillRow.id = 'drill-' + idx;
-      drillRow.innerHTML = '<td colspan="4"><div id="drill-content-' + idx + '"></div></td>';
+      drillRow.innerHTML = '<td colspan="6"><div id="drill-content-' + idx + '"></div></td>';
       tbody.appendChild(drillRow);
     });
   }
