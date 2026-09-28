@@ -76,6 +76,17 @@ async function initDb() {
       UNIQUE(member_key, date)
     );
   `);
+  // Added this session: added-sugar and alcohol tracking. ADD COLUMN IF NOT EXISTS instead of
+  // folding these into the CREATE TABLE above, because CREATE TABLE IF NOT EXISTS is a no-op on
+  // a table that already exists in production — the columns would silently never get added.
+  await pool.query(`
+    ALTER TABLE nutrition_logs
+      ADD COLUMN IF NOT EXISTS added_sugar_g REAL,
+      ADD COLUMN IF NOT EXISTS added_sugar_streak INTEGER,
+      ADD COLUMN IF NOT EXISTS drinks_alcohol BOOLEAN,
+      ADD COLUMN IF NOT EXISTS alcohol_cal REAL,
+      ADD COLUMN IF NOT EXISTS no_alcohol_streak INTEGER;
+  `);
 }
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'change-me';
@@ -230,7 +241,10 @@ app.post('/api/nutrition-log', async (req, res) => {
   const {
     memberId, memberEmail, memberName, date,
     calories, goalCalories, proteinG, carbsG, fatG,
-    micros, microPct, lowestMicroKey, dietTags
+    micros, microPct, lowestMicroKey, dietTags,
+    // Added this session: added-sugar and alcohol figures, plus each streak as of this sync,
+    // computed client-side from the member's own 30-day archive.
+    addedSugarG, addedSugarStreak, drinksAlcohol, alcoholCal, noAlcoholStreak
   } = req.body || {};
 
   const memberKey = memberId ? `id:${memberId}` : (memberEmail ? `email:${memberEmail}` : null);
@@ -241,8 +255,8 @@ app.post('/api/nutrition-log', async (req, res) => {
   try {
     await pool.query(
       `INSERT INTO nutrition_logs
-         (member_key, member_id, member_email, member_name, date, calories, goal_calories, protein_g, carbs_g, fat_g, micros, micro_pct, lowest_micro_key, diet_tags, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+         (member_key, member_id, member_email, member_name, date, calories, goal_calories, protein_g, carbs_g, fat_g, micros, micro_pct, lowest_micro_key, diet_tags, added_sugar_g, added_sugar_streak, drinks_alcohol, alcohol_cal, no_alcohol_streak, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        ON CONFLICT (member_key, date) DO UPDATE SET
          member_id = EXCLUDED.member_id,
          member_email = EXCLUDED.member_email,
@@ -256,6 +270,11 @@ app.post('/api/nutrition-log', async (req, res) => {
          micro_pct = EXCLUDED.micro_pct,
          lowest_micro_key = EXCLUDED.lowest_micro_key,
          diet_tags = EXCLUDED.diet_tags,
+         added_sugar_g = EXCLUDED.added_sugar_g,
+         added_sugar_streak = EXCLUDED.added_sugar_streak,
+         drinks_alcohol = EXCLUDED.drinks_alcohol,
+         alcohol_cal = EXCLUDED.alcohol_cal,
+         no_alcohol_streak = EXCLUDED.no_alcohol_streak,
          updated_at = EXCLUDED.updated_at`,
       [
         memberKey,
@@ -272,6 +291,11 @@ app.post('/api/nutrition-log', async (req, res) => {
         JSON.stringify(microPct || {}),
         lowestMicroKey || null,
         JSON.stringify(dietTags || []),
+        addedSugarG ?? null,
+        addedSugarStreak ?? null,
+        drinksAlcohol ?? false,
+        alcoholCal ?? null,
+        noAlcoholStreak ?? null,
         new Date().toISOString()
       ]
     );
@@ -294,7 +318,8 @@ app.get('/api/nutrition-log', async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT date, calories, goal_calories, protein_g, carbs_g, fat_g, micros, micro_pct, lowest_micro_key
+      `SELECT date, calories, goal_calories, protein_g, carbs_g, fat_g, micros, micro_pct, lowest_micro_key,
+              added_sugar_g, added_sugar_streak, drinks_alcohol, alcohol_cal, no_alcohol_streak
        FROM nutrition_logs
        WHERE member_key = $1
        ORDER BY date DESC
@@ -312,7 +337,12 @@ app.get('/api/nutrition-log', async (req, res) => {
       fatG: r.fat_g,
       micros: r.micros || {},
       microPct: r.micro_pct || {},
-      lowestMicroKey: r.lowest_micro_key
+      lowestMicroKey: r.lowest_micro_key,
+      addedSugarG: r.added_sugar_g,
+      addedSugarStreak: r.added_sugar_streak,
+      drinksAlcohol: r.drinks_alcohol,
+      alcoholCal: r.alcohol_cal,
+      noAlcoholStreak: r.no_alcohol_streak
     }));
 
     res.json({ entries });
@@ -355,7 +385,13 @@ app.get('/api/admin/nutrition-summary', async (req, res) => {
         proteinG: r.protein_g,
         carbsG: r.carbs_g,
         fatG: r.fat_g,
-        microPct: r.micro_pct || {}
+        microPct: r.micro_pct || {},
+        // Added this session — see the two new Nutrition-tab columns in admin.html.
+        addedSugarG: r.added_sugar_g,
+        addedSugarStreak: r.added_sugar_streak,
+        drinksAlcohol: r.drinks_alcohol,
+        alcoholCal: r.alcohol_cal,
+        noAlcoholStreak: r.no_alcohol_streak
       });
     });
 
@@ -382,7 +418,22 @@ app.get('/api/admin/nutrition-summary', async (req, res) => {
 
       const latest = m.days[m.days.length - 1] || null;
 
-      return { name: m.name, email: m.email, memberId: m.memberId, loggedDays, latest, flaggedDeficiency, days: m.days };
+      // addedSugarStreak / drinksAlcohol / noAlcoholStreak aren't recomputed here — the
+      // calculator already works these out client-side from the member's full 30-day archive
+      // every time it syncs, so the most recent synced day's numbers are the current numbers,
+      // the same way `latest.calories` already works a few lines below.
+      return {
+        name: m.name,
+        email: m.email,
+        memberId: m.memberId,
+        loggedDays,
+        latest,
+        flaggedDeficiency,
+        days: m.days,
+        addedSugarStreak: latest ? latest.addedSugarStreak : null,
+        drinksAlcohol: latest ? !!latest.drinksAlcohol : false,
+        noAlcoholStreak: latest ? latest.noAlcoholStreak : null
+      };
     });
 
     res.json({ members, windowDays });
