@@ -90,6 +90,7 @@
     <div class="tabs">
       <button class="tab-btn active" id="tab-btn-scorecard" data-tab="scorecard">SCORECARD</button>
       <button class="tab-btn" id="tab-btn-nutrition" data-tab="nutrition">NUTRITION</button>
+      <button class="tab-btn" id="tab-btn-sleep" data-tab="sleep">SLEEP</button>
     </div>
 
     <div class="tab-panel active" id="tab-scorecard">
@@ -122,6 +123,22 @@
         <tbody id="nutrition-rows"></tbody>
       </table>
       <div class="empty-state" id="nutrition-empty-state" style="display:none;">No nutrition logs recorded yet.</div>
+    </div>
+
+    <div class="tab-panel" id="tab-sleep">
+      <table>
+        <thead>
+          <tr>
+            <th>Member</th>
+            <th>Last Night</th>
+            <th>Avg Sleep (30d)</th>
+            <th>Avg Score (30d)</th>
+            <th>Days Logged</th>
+          </tr>
+        </thead>
+        <tbody id="sleep-rows"></tbody>
+      </table>
+      <div class="empty-state" id="sleep-empty-state" style="display:none;">No sleep logs recorded yet.</div>
     </div>
 
   </div>
@@ -175,13 +192,15 @@
   function loadDashboard(key){
     Promise.all([
       fetchJson('/api/admin/summary', key),
-      fetchJson('/api/admin/nutrition-summary', key)
+      fetchJson('/api/admin/nutrition-summary', key),
+      fetchJson('/api/admin/sleep-summary', key)
     ])
       .then(function(results){
         document.getElementById('key-gate').style.display = 'none';
         document.getElementById('dashboard').style.display = 'block';
         renderMembers(results[0].members || []);
         renderNutrition(results[1].members || []);
+        renderSleep(results[2].members || []);
       })
       .catch(function(err){
         console.error('Admin dashboard load failed:', err);
@@ -279,6 +298,69 @@
       drillRow.innerHTML = '<td colspan="6"><div id="drill-content-' + idx + '"></div></td>';
       tbody.appendChild(drillRow);
     });
+  }
+
+  function renderSleep(members){
+    var tbody = document.getElementById('sleep-rows');
+    tbody.innerHTML = '';
+    document.getElementById('sleep-empty-state').style.display = members.length ? 'none' : 'block';
+
+    members.forEach(function(m, idx){
+      var tr = document.createElement('tr');
+      tr.className = 'clickable';
+
+      var lastNightHtml = '—';
+      if (m.latest && m.latest.estSleepHrs != null) {
+        lastNightHtml = '<span class="cal-line">' + m.latest.estSleepHrs + 'h</span>' +
+          (m.latest.score != null ? ' <span class="email">score ' + m.latest.score + '</span>' : '');
+      }
+
+      var avgSleepHtml = m.avgSleepHrs != null ? m.avgSleepHrs + 'h' : '—';
+      var avgScoreHtml = m.avgScore != null ? '<span class="streak">' + m.avgScore + '</span>' : '—';
+
+      tr.innerHTML =
+        '<td><div class="name">' + (m.name || '(no name)') + '</div><div class="email">' + (m.email || ('Movement ID: ' + m.memberId)) + '</div></td>' +
+        '<td>' + lastNightHtml + '</td>' +
+        '<td>' + avgSleepHtml + '</td>' +
+        '<td>' + avgScoreHtml + '</td>' +
+        '<td>' + (m.loggedDays || 0) + '</td>';
+
+      tr.addEventListener('click', function(){ toggleSleepDrill(idx, m); });
+      tbody.appendChild(tr);
+
+      var drillRow = document.createElement('tr');
+      drillRow.className = 'drill';
+      drillRow.id = 'sleep-drill-' + idx;
+      drillRow.innerHTML = '<td colspan="5"><div id="sleep-drill-content-' + idx + '"></div></td>';
+      tbody.appendChild(drillRow);
+    });
+  }
+
+  function toggleSleepDrill(idx, member){
+    var row = document.getElementById('sleep-drill-' + idx);
+    var isOpen = row.classList.contains('open');
+    document.querySelectorAll('.drill.open').forEach(function(r){ r.classList.remove('open'); });
+    if (isOpen) return;
+
+    row.classList.add('open');
+    var content = document.getElementById('sleep-drill-content-' + idx);
+
+    var rowsHtml = (member.days || []).slice().reverse().map(function(d){
+      return '<tr>' +
+        '<td>' + d.date + '</td>' +
+        '<td>' + (d.estSleepHrs != null ? d.estSleepHrs + 'h' : '—') + '</td>' +
+        '<td>' + (d.timeInBedHrs != null ? d.timeInBedHrs + 'h' : '—') + '</td>' +
+        '<td>' + (d.wakeups != null ? d.wakeups : '—') + '</td>' +
+        '<td>' + (d.restfulness != null ? d.restfulness + '/10' : '—') + '</td>' +
+        '<td>' + (d.score != null ? d.score : '—') + '</td>' +
+        '</tr>';
+    }).join('');
+
+    content.innerHTML =
+      '<table class="drill-table">' +
+      '<thead><tr><th>Date</th><th>Sleep</th><th>In Bed</th><th>Wake-ups</th><th>Restfulness</th><th>Score</th></tr></thead>' +
+      '<tbody>' + rowsHtml + '</tbody>' +
+      '</table>';
   }
 
   function toggleDrill(idx, member){
