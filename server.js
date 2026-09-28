@@ -87,6 +87,26 @@ async function initDb() {
       ADD COLUMN IF NOT EXISTS alcohol_cal REAL,
       ADD COLUMN IF NOT EXISTS no_alcohol_streak INTEGER;
   `);
+  // Sleep Quality Index widget's backing table.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sleep_logs (
+      id SERIAL PRIMARY KEY,
+      member_key TEXT NOT NULL,
+      member_id TEXT,
+      member_email TEXT,
+      member_name TEXT,
+      date TEXT NOT NULL,
+      onset_category TEXT,
+      time_in_bed_hrs REAL,
+      est_sleep_hrs REAL,
+      wakeups INTEGER,
+      wake_variance_min REAL,
+      restfulness INTEGER,
+      score INTEGER,
+      updated_at TIMESTAMPTZ NOT NULL,
+      UNIQUE(member_key, date)
+    );
+  `);
 }
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'change-me';
@@ -440,6 +460,173 @@ app.get('/api/admin/nutrition-summary', async (req, res) => {
   } catch (err) {
     console.error('admin nutrition-summary failed:', err);
     res.status(500).json({ error: 'failed to load nutrition summary' });
+  }
+});
+
+// ---- sleep quality widget calls this on every "Log Last Night" submit ----
+app.post('/api/sleep-score', async (req, res) => {
+  const {
+    memberId, memberEmail, memberName, date,
+    onsetCategory, timeInBedHrs, estSleepHrs, wakeups, wakeVarianceMin, restfulness, score
+  } = req.body || {};
+
+  const memberKey = memberId ? `id:${memberId}` : (memberEmail ? `email:${memberEmail}` : null);
+  if (!memberKey || !date) {
+    return res.status(400).json({ error: 'memberId or memberEmail, plus date, are required' });
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO sleep_logs
+         (member_key, member_id, member_email, member_name, date, onset_category, time_in_bed_hrs, est_sleep_hrs, wakeups, wake_variance_min, restfulness, score, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       ON CONFLICT (member_key, date) DO UPDATE SET
+         member_id = EXCLUDED.member_id,
+         member_email = EXCLUDED.member_email,
+         member_name = EXCLUDED.member_name,
+         onset_category = EXCLUDED.onset_category,
+         time_in_bed_hrs = EXCLUDED.time_in_bed_hrs,
+         est_sleep_hrs = EXCLUDED.est_sleep_hrs,
+         wakeups = EXCLUDED.wakeups,
+         wake_variance_min = EXCLUDED.wake_variance_min,
+         restfulness = EXCLUDED.restfulness,
+         score = EXCLUDED.score,
+         updated_at = EXCLUDED.updated_at`,
+      [
+        memberKey,
+        memberId || null,
+        memberEmail || null,
+        memberName || '',
+        date,
+        onsetCategory || null,
+        timeInBedHrs ?? null,
+        estSleepHrs ?? null,
+        wakeups ?? null,
+        wakeVarianceMin ?? null,
+        restfulness ?? null,
+        score ?? null,
+        new Date().toISOString()
+      ]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('sleep-score insert failed:', err);
+    res.status(500).json({ error: 'failed to save sleep score' });
+  }
+});
+
+// ---- sleep widget's own history chart calls this, keyed the same way as nutrition-log ----
+app.get('/api/sleep-score', async (req, res) => {
+  const { memberId, memberEmail, days } = req.query;
+  const memberKey = memberId ? `id:${memberId}` : (memberEmail ? `email:${memberEmail}` : null);
+  const lookback = parseInt(days, 10) || 30;
+
+  if (!memberKey) {
+    return res.status(400).json({ error: 'memberId or memberEmail is required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT date, onset_category, time_in_bed_hrs, est_sleep_hrs, wakeups, wake_variance_min, restfulness, score
+       FROM sleep_logs
+       WHERE member_key = $1
+       ORDER BY date DESC
+       LIMIT $2`,
+      [memberKey, lookback]
+    );
+
+    // Keep the row shape snake_case here, matching what the widget's renderChart already expects
+    // (e.g. e.est_sleep_hrs) rather than camelCasing and having to change the front end too.
+    const entries = result.rows.reverse().map(r => ({
+      date: r.date,
+      onset_category: r.onset_category,
+      time_in_bed_hrs: r.time_in_bed_hrs,
+      est_sleep_hrs: r.est_sleep_hrs,
+      wakeups: r.wakeups,
+      wake_variance_min: r.wake_variance_min,
+      restfulness: r.restfulness,
+      score: r.score
+    }));
+
+    const withSleep = entries.filter(e => typeof e.est_sleep_hrs === 'number');
+    const averageSleepHrs = withSleep.length
+      ? Math.round((withSleep.reduce((sum, e) => sum + e.est_sleep_hrs, 0) / withSleep.length) * 10) / 10
+      : 0;
+
+    res.json({ entries, averageSleepHrs });
+  } catch (err) {
+    console.error('sleep-score fetch failed:', err);
+    res.status(500).json({ error: 'failed to load sleep history' });
+  }
+});
+
+// ---- admin dashboard's Sleep tab, same auth pattern as the other /api/admin/* routes ----
+app.get('/api/admin/sleep-summary', async (req, res) => {
+  if (req.headers['x-admin-key'] !== ADMIN_KEY) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  const windowDays = parseInt(req.query.days, 10) || 30;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - windowDays);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+  try {
+    const result = await pool.query(
+      `SELECT * FROM sleep_logs WHERE date >= $1 ORDER BY member_key, date`,
+      [cutoffStr]
+    );
+    const rows = result.rows;
+
+    const byMember = {};
+    rows.forEach(r => {
+      if (!byMember[r.member_key]) {
+        byMember[r.member_key] = { name: r.member_name, email: r.member_email, memberId: r.member_id, days: [] };
+      }
+      byMember[r.member_key].days.push({
+        date: r.date,
+        onsetCategory: r.onset_category,
+        timeInBedHrs: r.time_in_bed_hrs,
+        estSleepHrs: r.est_sleep_hrs,
+        wakeups: r.wakeups,
+        wakeVarianceMin: r.wake_variance_min,
+        restfulness: r.restfulness,
+        score: r.score
+      });
+    });
+
+    const members = Object.values(byMember).map(m => {
+      m.days.sort((a, b) => a.date.localeCompare(b.date));
+
+      const loggedDays = m.days.length;
+      const withSleep = m.days.filter(d => typeof d.estSleepHrs === 'number');
+      const withScore = m.days.filter(d => typeof d.score === 'number');
+
+      const avgSleepHrs = withSleep.length
+        ? Math.round((withSleep.reduce((sum, d) => sum + d.estSleepHrs, 0) / withSleep.length) * 10) / 10
+        : null;
+      const avgScore = withScore.length
+        ? Math.round(withScore.reduce((sum, d) => sum + d.score, 0) / withScore.length)
+        : null;
+
+      const latest = m.days[m.days.length - 1] || null;
+
+      return {
+        name: m.name,
+        email: m.email,
+        memberId: m.memberId,
+        loggedDays,
+        avgSleepHrs,
+        avgScore,
+        latest,
+        days: m.days
+      };
+    });
+
+    res.json({ members, windowDays });
+  } catch (err) {
+    console.error('admin sleep-summary failed:', err);
+    res.status(500).json({ error: 'failed to load sleep summary' });
   }
 });
 
