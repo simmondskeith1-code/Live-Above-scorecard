@@ -87,6 +87,23 @@ async function initDb() {
       ADD COLUMN IF NOT EXISTS alcohol_cal REAL,
       ADD COLUMN IF NOT EXISTS no_alcohol_streak INTEGER;
   `);
+  // Member profile / custom foods / supplements / drinks — previously localStorage-only on the
+  // calculator, which meant a member switching devices or clearing browser data lost all of it.
+  // One row per member, upserted whenever any of it changes, pulled down on a fresh device that
+  // has no local profile yet.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS member_data (
+      member_key TEXT PRIMARY KEY,
+      member_id TEXT,
+      member_email TEXT,
+      member_name TEXT,
+      profile JSONB,
+      custom_foods JSONB,
+      supplements JSONB,
+      drinks JSONB,
+      updated_at TIMESTAMPTZ NOT NULL
+    );
+  `);
   // Sleep Quality Index widget's backing table.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sleep_logs (
@@ -411,7 +428,10 @@ app.get('/api/admin/nutrition-summary', async (req, res) => {
         addedSugarStreak: r.added_sugar_streak,
         drinksAlcohol: r.drinks_alcohol,
         alcoholCal: r.alcohol_cal,
-        noAlcoholStreak: r.no_alcohol_streak
+        noAlcoholStreak: r.no_alcohol_streak,
+        // Added this session — lets the admin dashboard flag a member whose device has stopped
+        // reaching the server at all, instead of that going unnoticed forever.
+        updatedAt: r.updated_at
       });
     });
 
@@ -627,6 +647,80 @@ app.get('/api/admin/sleep-summary', async (req, res) => {
   } catch (err) {
     console.error('admin sleep-summary failed:', err);
     res.status(500).json({ error: 'failed to load sleep summary' });
+  }
+});
+
+// ---- calculator calls this whenever profile/custom foods/supplements/drinks change ----
+app.post('/api/member-data', async (req, res) => {
+  const { memberId, memberEmail, memberName, profile, customFoods, supplements, drinks } = req.body || {};
+
+  const memberKey = memberId ? `id:${memberId}` : (memberEmail ? `email:${memberEmail}` : null);
+  if (!memberKey) {
+    return res.status(400).json({ error: 'memberId or memberEmail is required' });
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO member_data (member_key, member_id, member_email, member_name, profile, custom_foods, supplements, drinks, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (member_key) DO UPDATE SET
+         member_id = EXCLUDED.member_id,
+         member_email = EXCLUDED.member_email,
+         member_name = EXCLUDED.member_name,
+         profile = EXCLUDED.profile,
+         custom_foods = EXCLUDED.custom_foods,
+         supplements = EXCLUDED.supplements,
+         drinks = EXCLUDED.drinks,
+         updated_at = EXCLUDED.updated_at`,
+      [
+        memberKey,
+        memberId || null,
+        memberEmail || null,
+        memberName || '',
+        JSON.stringify(profile || {}),
+        JSON.stringify(customFoods || []),
+        JSON.stringify(supplements || []),
+        JSON.stringify(drinks || []),
+        new Date().toISOString()
+      ]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('member-data insert failed:', err);
+    res.status(500).json({ error: 'failed to save member data' });
+  }
+});
+
+// ---- calculator calls this once on identity resolution, to pull down a profile that was set up
+// on a different device (a fresh device has nothing in localStorage to fall back on) ----
+app.get('/api/member-data', async (req, res) => {
+  const { memberId, memberEmail } = req.query;
+  const memberKey = memberId ? `id:${memberId}` : (memberEmail ? `email:${memberEmail}` : null);
+
+  if (!memberKey) {
+    return res.status(400).json({ error: 'memberId or memberEmail is required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT profile, custom_foods, supplements, drinks, updated_at FROM member_data WHERE member_key = $1`,
+      [memberKey]
+    );
+    if (result.rows.length === 0) {
+      return res.json({ found: false });
+    }
+    const r = result.rows[0];
+    res.json({
+      found: true,
+      profile: r.profile || {},
+      customFoods: r.custom_foods || [],
+      supplements: r.supplements || [],
+      drinks: r.drinks || [],
+      updatedAt: r.updated_at
+    });
+  } catch (err) {
+    console.error('member-data fetch failed:', err);
+    res.status(500).json({ error: 'failed to load member data' });
   }
 });
 
