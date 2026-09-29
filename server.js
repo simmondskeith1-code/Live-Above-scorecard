@@ -87,6 +87,13 @@ async function initDb() {
       ADD COLUMN IF NOT EXISTS alcohol_cal REAL,
       ADD COLUMN IF NOT EXISTS no_alcohol_streak INTEGER;
   `);
+  // Added this session: glycemic load tracking (whole foods only — restaurant/custom items never
+  // carry a GI, so gl_coverage_pct legitimately stays low or null on days built mostly from those).
+  await pool.query(`
+    ALTER TABLE nutrition_logs
+      ADD COLUMN IF NOT EXISTS gl REAL,
+      ADD COLUMN IF NOT EXISTS gl_coverage_pct INTEGER;
+  `);
   // Member profile / custom foods / supplements / drinks — previously localStorage-only on the
   // calculator, which meant a member switching devices or clearing browser data lost all of it.
   // One row per member, upserted whenever any of it changes, pulled down on a fresh device that
@@ -281,7 +288,10 @@ app.post('/api/nutrition-log', async (req, res) => {
     micros, microPct, lowestMicroKey, dietTags,
     // Added this session: added-sugar and alcohol figures, plus each streak as of this sync,
     // computed client-side from the member's own 30-day archive.
-    addedSugarG, addedSugarStreak, drinksAlcohol, alcoholCal, noAlcoholStreak
+    addedSugarG, addedSugarStreak, drinksAlcohol, alcoholCal, noAlcoholStreak,
+    // Added this session: glycemic load, whole-foods-only (see nutrient-calculator.html's
+    // computeTotalsForStoredItems — restaurant/custom items never carry a gi field).
+    glycemicLoad, glCoveragePct
   } = req.body || {};
 
   const memberKey = memberId ? `id:${memberId}` : (memberEmail ? `email:${memberEmail}` : null);
@@ -292,8 +302,8 @@ app.post('/api/nutrition-log', async (req, res) => {
   try {
     await pool.query(
       `INSERT INTO nutrition_logs
-         (member_key, member_id, member_email, member_name, date, calories, goal_calories, protein_g, carbs_g, fat_g, micros, micro_pct, lowest_micro_key, diet_tags, added_sugar_g, added_sugar_streak, drinks_alcohol, alcohol_cal, no_alcohol_streak, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+         (member_key, member_id, member_email, member_name, date, calories, goal_calories, protein_g, carbs_g, fat_g, micros, micro_pct, lowest_micro_key, diet_tags, added_sugar_g, added_sugar_streak, drinks_alcohol, alcohol_cal, no_alcohol_streak, gl, gl_coverage_pct, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
        ON CONFLICT (member_key, date) DO UPDATE SET
          member_id = EXCLUDED.member_id,
          member_email = EXCLUDED.member_email,
@@ -312,6 +322,8 @@ app.post('/api/nutrition-log', async (req, res) => {
          drinks_alcohol = EXCLUDED.drinks_alcohol,
          alcohol_cal = EXCLUDED.alcohol_cal,
          no_alcohol_streak = EXCLUDED.no_alcohol_streak,
+         gl = EXCLUDED.gl,
+         gl_coverage_pct = EXCLUDED.gl_coverage_pct,
          updated_at = EXCLUDED.updated_at`,
       [
         memberKey,
@@ -333,6 +345,8 @@ app.post('/api/nutrition-log', async (req, res) => {
         drinksAlcohol ?? false,
         alcoholCal ?? null,
         noAlcoholStreak ?? null,
+        glycemicLoad ?? null,
+        glCoveragePct ?? null,
         new Date().toISOString()
       ]
     );
@@ -356,7 +370,8 @@ app.get('/api/nutrition-log', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT date, calories, goal_calories, protein_g, carbs_g, fat_g, micros, micro_pct, lowest_micro_key,
-              added_sugar_g, added_sugar_streak, drinks_alcohol, alcohol_cal, no_alcohol_streak
+              added_sugar_g, added_sugar_streak, drinks_alcohol, alcohol_cal, no_alcohol_streak,
+              gl, gl_coverage_pct
        FROM nutrition_logs
        WHERE member_key = $1
        ORDER BY date DESC
@@ -379,7 +394,9 @@ app.get('/api/nutrition-log', async (req, res) => {
       addedSugarStreak: r.added_sugar_streak,
       drinksAlcohol: r.drinks_alcohol,
       alcoholCal: r.alcohol_cal,
-      noAlcoholStreak: r.no_alcohol_streak
+      noAlcoholStreak: r.no_alcohol_streak,
+      glycemicLoad: r.gl,
+      glCoveragePct: r.gl_coverage_pct
     }));
 
     res.json({ entries });
@@ -429,6 +446,11 @@ app.get('/api/admin/nutrition-summary', async (req, res) => {
         drinksAlcohol: r.drinks_alcohol,
         alcoholCal: r.alcohol_cal,
         noAlcoholStreak: r.no_alcohol_streak,
+        // Added this session — glycemic load, whole-foods-only (see gl_coverage_pct: a low
+        // number means most of the day's carbs came from restaurant/custom items with no GI,
+        // not that the member ate low-GL).
+        gl: r.gl,
+        glCoveragePct: r.gl_coverage_pct,
         // Added this session — lets the admin dashboard flag a member whose device has stopped
         // reaching the server at all, instead of that going unnoticed forever.
         updatedAt: r.updated_at
@@ -456,6 +478,16 @@ app.get('/api/admin/nutrition-summary', async (req, res) => {
         ? { key: flagged, daysLow: flaggedCount, loggedDays }
         : null;
 
+      // Consistently high glycemic load: only counts a day toward this if at least 30% of that
+      // day's net carbs actually had a published GI behind them (gl_coverage_pct) — a day built
+      // almost entirely from restaurant/custom items has an honest gl near 0 that means nothing
+      // and shouldn't count as either a "good" or "bad" day for this flag.
+      const highGlDays = m.days.filter(d => d.glCoveragePct != null && d.glCoveragePct >= 30 && d.gl != null);
+      const highGlCount = highGlDays.filter(d => d.gl > 120).length;
+      const flaggedHighGl = (highGlDays.length >= 3 && highGlCount >= Math.ceil(highGlDays.length / 2))
+        ? { daysHigh: highGlCount, evaluableDays: highGlDays.length }
+        : null;
+
       const latest = m.days[m.days.length - 1] || null;
 
       // addedSugarStreak / drinksAlcohol / noAlcoholStreak aren't recomputed here — the
@@ -469,6 +501,7 @@ app.get('/api/admin/nutrition-summary', async (req, res) => {
         loggedDays,
         latest,
         flaggedDeficiency,
+        flaggedHighGl,
         days: m.days,
         addedSugarStreak: latest ? latest.addedSugarStreak : null,
         drinksAlcohol: latest ? !!latest.drinksAlcohol : false,
