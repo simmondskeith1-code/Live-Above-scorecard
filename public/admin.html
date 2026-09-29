@@ -118,6 +118,7 @@
             <th>Days Logged</th>
             <th>No Added Sugar</th>
             <th>No Alcohol</th>
+            <th>Glycemic Load (30d Avg)</th>
           </tr>
         </thead>
         <tbody id="nutrition-rows"></tbody>
@@ -281,13 +282,28 @@
         ? '<span class="email">N/A</span>'
         : (m.noAlcoholStreak != null ? '<span class="streak">' + m.noAlcoholStreak + '</span>' : '—');
 
+      // Glycemic load, whole-foods-only: averaged the same way server.js's flaggedHighGl does —
+      // coverage-weighted across days that actually had enough GI-backed carbs to mean anything,
+      // not a naive per-day average. A member eating out constantly will show "Not enough data"
+      // here rather than a misleadingly low number.
+      var glDays = (m.days || []).filter(function(d){ return d.glCoveragePct != null && d.glCoveragePct >= 30 && d.gl != null; });
+      var glHtml = '<span class="email">Not enough data</span>';
+      if (glDays.length > 0) {
+        var glAvg = Math.round(glDays.reduce(function(sum, d){ return sum + d.gl; }, 0) / glDays.length);
+        glHtml = '<span class="cal-line ' + (glAvg > 120 ? 'over' : '') + '">' + glAvg + '</span>';
+      }
+      if (m.flaggedHighGl) {
+        glHtml += ' <span class="badge flag">high ' + m.flaggedHighGl.daysHigh + '/' + m.flaggedHighGl.evaluableDays + ' days</span>';
+      }
+
       tr.innerHTML =
         '<td><div class="name">' + (m.name || '(no name)') + '</div><div class="email">' + (m.email || ('Movement ID: ' + m.memberId)) + '</div></td>' +
         '<td>' + calLine + '</td>' +
         '<td>' + badgeHtml + '</td>' +
         '<td>' + (m.loggedDays || 0) + '</td>' +
         '<td>' + sugarStreakHtml + '</td>' +
-        '<td>' + alcoholStreakHtml + '</td>';
+        '<td>' + alcoholStreakHtml + '</td>' +
+        '<td>' + glHtml + '</td>';
 
       tr.addEventListener('click', function(){ toggleDrill(idx, m); });
       tbody.appendChild(tr);
@@ -295,7 +311,7 @@
       var drillRow = document.createElement('tr');
       drillRow.className = 'drill';
       drillRow.id = 'drill-' + idx;
-      drillRow.innerHTML = '<td colspan="6"><div id="drill-content-' + idx + '"></div></td>';
+      drillRow.innerHTML = '<td colspan="7"><div id="drill-content-' + idx + '"></div></td>';
       tbody.appendChild(drillRow);
     });
   }
