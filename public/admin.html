@@ -37,6 +37,19 @@
   .tab-panel{display:none;}
   .tab-panel.active{display:block;}
 
+  .admin-search-wrap{position:relative;margin-bottom:16px;}
+  #admin-search{
+    width:100%;background:var(--card);border:1px solid var(--line);color:var(--white);
+    font-family:'DM Sans',sans-serif;font-size:14px;padding:11px 36px 11px 14px;border-radius:6px;
+    box-sizing:border-box;
+  }
+  #admin-search::placeholder{color:var(--grey);}
+  #admin-search-clear{
+    position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;
+    color:var(--grey);font-size:16px;cursor:pointer;padding:4px 6px;display:none;
+  }
+  #admin-search-clear.show{display:block;}
+
   table{width:100%;border-collapse:collapse;font-size:13px;}
   th{
     text-align:left;color:var(--grey);font-weight:700;font-size:11px;letter-spacing:0.4px;
@@ -91,6 +104,11 @@
       <button class="tab-btn active" id="tab-btn-scorecard" data-tab="scorecard">SCORECARD</button>
       <button class="tab-btn" id="tab-btn-nutrition" data-tab="nutrition">NUTRITION</button>
       <button class="tab-btn" id="tab-btn-sleep" data-tab="sleep">SLEEP</button>
+    </div>
+
+    <div class="admin-search-wrap">
+      <input type="text" id="admin-search" placeholder="Search member name or email...">
+      <button id="admin-search-clear" title="Clear search">✕</button>
     </div>
 
     <div class="tab-panel active" id="tab-scorecard">
@@ -190,6 +208,48 @@
     });
   }
 
+  // Full, unfiltered lists from the last successful load — the search box below filters these
+  // in memory and re-renders, rather than re-fetching, so typing feels instant.
+  var allScorecardMembers = [];
+  var allNutritionMembers = [];
+  var allSleepMembers = [];
+
+  function matchesSearch(m, query){
+    if (!query) return true;
+    var name = (m.name || '').toLowerCase();
+    var email = (m.email || '').toLowerCase();
+    var memberId = (m.memberId || '').toString().toLowerCase();
+    return name.indexOf(query) !== -1 || email.indexOf(query) !== -1 || memberId.indexOf(query) !== -1;
+  }
+
+  // Each render*() already toggles its own empty-state div on/off based on list length, but its
+  // default text ("No check-ins recorded yet.") is wrong when the list is empty because a search
+  // filtered everything out, not because there's no data. Overwrite the text after rendering
+  // whenever a query is active and the panel ended up empty.
+  function fixEmptyStateText(id, defaultText, query){
+    var el = document.getElementById(id);
+    if (el.style.display !== 'none') {
+      el.textContent = query ? 'No members match "' + query + '".' : defaultText;
+    }
+  }
+
+  function applyAdminSearch(){
+    var query = document.getElementById('admin-search').value.trim().toLowerCase();
+    document.getElementById('admin-search-clear').classList.toggle('show', !!query);
+    renderMembers(allScorecardMembers.filter(function(m){ return matchesSearch(m, query); }));
+    renderNutrition(allNutritionMembers.filter(function(m){ return matchesSearch(m, query); }));
+    renderSleep(allSleepMembers.filter(function(m){ return matchesSearch(m, query); }));
+    fixEmptyStateText('empty-state', 'No check-ins recorded yet.', query);
+    fixEmptyStateText('nutrition-empty-state', 'No nutrition logs recorded yet.', query);
+    fixEmptyStateText('sleep-empty-state', 'No sleep logs recorded yet.', query);
+  }
+
+  document.getElementById('admin-search').addEventListener('input', applyAdminSearch);
+  document.getElementById('admin-search-clear').addEventListener('click', function(){
+    document.getElementById('admin-search').value = '';
+    applyAdminSearch();
+  });
+
   function loadDashboard(key){
     Promise.all([
       fetchJson('/api/admin/summary', key),
@@ -199,9 +259,10 @@
       .then(function(results){
         document.getElementById('key-gate').style.display = 'none';
         document.getElementById('dashboard').style.display = 'block';
-        renderMembers(results[0].members || []);
-        renderNutrition(results[1].members || []);
-        renderSleep(results[2].members || []);
+        allScorecardMembers = results[0].members || [];
+        allNutritionMembers = results[1].members || [];
+        allSleepMembers = results[2].members || [];
+        applyAdminSearch();
       })
       .catch(function(err){
         console.error('Admin dashboard load failed:', err);
