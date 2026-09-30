@@ -415,8 +415,23 @@ app.get('/api/admin/debug-recent-logs', async (req, res) => {
   if (req.query.key !== ADMIN_KEY && req.headers['x-admin-key'] !== ADMIN_KEY) {
     return res.status(401).json({ error: 'unauthorized' });
   }
-  const hours = parseInt(req.query.hours, 10) || 4;
   try {
+    // ?q=<text> searches member_key/member_email/member_name for that text, ACROSS ALL TIME —
+    // no window — to answer "does this person's data exist anywhere, ever," not just recently.
+    // Without ?q, falls back to the original recent-writes view (?hours=, default 4).
+    if (req.query.q) {
+      const needle = '%' + req.query.q + '%';
+      const result = await pool.query(
+        `SELECT member_key, member_id, member_email, member_name, date, calories, updated_at
+         FROM nutrition_logs
+         WHERE member_key ILIKE $1 OR member_email ILIKE $1 OR member_name ILIKE $1
+         ORDER BY updated_at DESC
+         LIMIT 50`,
+        [needle]
+      );
+      return res.json({ rows: result.rows, searchedFor: req.query.q });
+    }
+    const hours = parseInt(req.query.hours, 10) || 4;
     const result = await pool.query(
       `SELECT member_key, member_id, member_email, member_name, date, calories, updated_at
        FROM nutrition_logs
