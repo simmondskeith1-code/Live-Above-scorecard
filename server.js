@@ -406,44 +406,29 @@ app.get('/api/nutrition-log', async (req, res) => {
   }
 });
 
-// ---- TEMPORARY DEBUG ROUTE — remove once the missing-member investigation is closed ----
-// Shows the raw, unaggregated rows written to nutrition_logs recently, exactly as stored,
-// bypassing the admin summary's grouping/windowing entirely. Accepts the admin key as a query
-// param (?key=...) instead of only the x-admin-key header, since this is meant to be opened
-// directly in a browser address bar, not called from admin.html's fetch code.
-app.get('/api/admin/debug-recent-logs', async (req, res) => {
+// ---- TEMPORARY DEBUG ROUTES — remove once the missing-member investigation is closed ----
+// The earlier debug-recent-logs route (raw nutrition_logs search) confirmed the target member's
+// data never reaches this table under any name/email variant, so the problem is client-side,
+// before any POST is ever sent. These two routes replace it: a fire-and-forget beacon the
+// calculator pings at each identity-gate lifecycle stage, and a viewer for those pings, so the
+// next time that member's device opens the app, we get real telemetry instead of another guess.
+// In-memory only (resets on redeploy/restart) — fine for a short debugging window.
+var identityDebugEvents = [];
+app.get('/api/admin/debug-identity-event', (req, res) => {
+  identityDebugEvents.push({
+    stage: req.query.stage || '',
+    detail: req.query.detail || '',
+    ua: req.headers['user-agent'] || '',
+    at: new Date().toISOString()
+  });
+  if (identityDebugEvents.length > 200) identityDebugEvents.shift();
+  res.status(204).end();
+});
+app.get('/api/admin/debug-identity-events', (req, res) => {
   if (req.query.key !== ADMIN_KEY && req.headers['x-admin-key'] !== ADMIN_KEY) {
     return res.status(401).json({ error: 'unauthorized' });
   }
-  try {
-    // ?q=<text> searches member_key/member_email/member_name for that text, ACROSS ALL TIME —
-    // no window — to answer "does this person's data exist anywhere, ever," not just recently.
-    // Without ?q, falls back to the original recent-writes view (?hours=, default 4).
-    if (req.query.q) {
-      const needle = '%' + req.query.q + '%';
-      const result = await pool.query(
-        `SELECT member_key, member_id, member_email, member_name, date, calories, updated_at
-         FROM nutrition_logs
-         WHERE member_key ILIKE $1 OR member_email ILIKE $1 OR member_name ILIKE $1
-         ORDER BY updated_at DESC
-         LIMIT 50`,
-        [needle]
-      );
-      return res.json({ rows: result.rows, searchedFor: req.query.q });
-    }
-    const hours = parseInt(req.query.hours, 10) || 4;
-    const result = await pool.query(
-      `SELECT member_key, member_id, member_email, member_name, date, calories, updated_at
-       FROM nutrition_logs
-       WHERE updated_at >= NOW() - ($1 || ' hours')::interval
-       ORDER BY updated_at DESC`,
-      [hours]
-    );
-    res.json({ rows: result.rows });
-  } catch (err) {
-    console.error('debug-recent-logs failed:', err);
-    res.status(500).json({ error: 'query failed', detail: err.message });
-  }
+  res.json({ events: identityDebugEvents });
 });
 
 // ---- admin dashboard's Nutrition tab, same auth pattern as /api/admin/summary ----
