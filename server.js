@@ -406,6 +406,31 @@ app.get('/api/nutrition-log', async (req, res) => {
   }
 });
 
+// ---- TEMPORARY DEBUG ROUTE — remove once the missing-member investigation is closed ----
+// Shows the raw, unaggregated rows written to nutrition_logs recently, exactly as stored,
+// bypassing the admin summary's grouping/windowing entirely. Accepts the admin key as a query
+// param (?key=...) instead of only the x-admin-key header, since this is meant to be opened
+// directly in a browser address bar, not called from admin.html's fetch code.
+app.get('/api/admin/debug-recent-logs', async (req, res) => {
+  if (req.query.key !== ADMIN_KEY && req.headers['x-admin-key'] !== ADMIN_KEY) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  const hours = parseInt(req.query.hours, 10) || 4;
+  try {
+    const result = await pool.query(
+      `SELECT member_key, member_id, member_email, member_name, date, calories, updated_at
+       FROM nutrition_logs
+       WHERE updated_at >= NOW() - ($1 || ' hours')::interval
+       ORDER BY updated_at DESC`,
+      [hours]
+    );
+    res.json({ rows: result.rows });
+  } catch (err) {
+    console.error('debug-recent-logs failed:', err);
+    res.status(500).json({ error: 'query failed', detail: err.message });
+  }
+});
+
 // ---- admin dashboard's Nutrition tab, same auth pattern as /api/admin/summary ----
 // Flags a member's most persistently low micronutrient over the trailing window
 // (default 21 days) — below 50% DV on at least half the days actually logged,
