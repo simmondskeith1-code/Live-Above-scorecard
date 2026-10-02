@@ -318,6 +318,12 @@
       var tr = document.createElement('tr');
       tr.className = 'clickable';
 
+      // m.latest is just the most recent row the member has ever synced — if they haven't
+      // logged anything yet today (or their device hasn't synced today's log), that row is
+      // from an earlier day, and showing it under "Today's Calories" with no indication it's
+      // stale is misleading. Compare against the admin's own local calendar date (this page
+      // runs in your browser, so "today" here means your today) and label it plainly when
+      // what's shown isn't actually today's data.
       var calLine = '—';
       if (m.latest && m.latest.calories != null) {
         var cls = '';
@@ -325,8 +331,12 @@
           cls = m.latest.calories < m.latest.goalCalories * 0.85 ? 'under'
               : (m.latest.calories > m.latest.goalCalories * 1.15 ? 'over' : '');
         }
+        var now = new Date();
+        var todayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+        var isToday = m.latest.date === todayStr;
         calLine = '<span class="cal-line ' + cls + '">' + Math.round(m.latest.calories) + '</span>' +
-          (m.latest.goalCalories ? ' <span class="email">/ ' + Math.round(m.latest.goalCalories) + ' goal</span>' : '');
+          (m.latest.goalCalories ? ' <span class="email">/ ' + Math.round(m.latest.goalCalories) + ' goal</span>' : '') +
+          (isToday ? '' : '<div class="email">No log today &middot; last: ' + m.latest.date + '</div>');
       }
 
       var badgeHtml = m.flaggedDeficiency
